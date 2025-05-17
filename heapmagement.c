@@ -1,46 +1,33 @@
+/*
+Heap Management System implemented using Buddy-system. 
+(Division of blocks in powers of 2)
+*/
+
 #include <stdio.h>
 #include <stdlib.h>
-#include <math.h>
-#include <stdint.h>
+#include <stdbool.h>
 
-#define MAX_LEVELS 10  
-#define MEMORY_SIZE (1 << MAX_LEVELS)  
+#define MEMORY_SIZE 1024
+#define MIN_BLOCK_SIZE 16  
 
+// Metadata for heap elements
 typedef struct Block {
     size_t size;
-    int free;
     struct Block *next;
+    bool allocated;
 } Block;
 
-static uint8_t memory_pool[MEMORY_SIZE]; // Custom memory pool
-Block *free_list[MAX_LEVELS + 1]; 
-void *allocated_blocks[MEMORY_SIZE];  
-int allocation_index = 0;
+// 1024 bytes memory to simulate Heap
+char memory[MEMORY_SIZE];
 
-Block *create_block(size_t size) {
-    static int initialized = 0;
-    if (!initialized) {
-        Block *initial_block = (Block *)memory_pool;
-        initial_block->size = MEMORY_SIZE;
-        initial_block->free = 1;
-        initial_block->next = NULL;
-        free_list[MAX_LEVELS] = initial_block;
-        initialized = 1;
-    }
-    return (Block *)memory_pool;
-}
+// Free list for powers of 2 from 2^0 to 2^10
+Block *freeList[11];  
 
-void init_memory() {
-    for (int i = 0; i <= MAX_LEVELS; i++) {
-        free_list[i] = NULL;
-    }
-    for (int i = 0; i < MEMORY_SIZE; i++) {
-        allocated_blocks[i] = NULL;
-    }
-    create_block(MEMORY_SIZE);
-}
+// List to mantain allocated blocks
+Block *allocatedList = NULL;
 
-int get_level(size_t size) {
+// Calculate ceil(log2(size)) to find the level in the free list
+int getLevel(size_t size) {
     int level = 0;
     while ((1 << level) < size) {
         level++;
@@ -48,179 +35,235 @@ int get_level(size_t size) {
     return level;
 }
 
-void split(int level) {
-    if (!free_list[level]) return;
-    
-    Block *block = free_list[level];
-    free_list[level] = block->next;
+void initializeMemory() {
+    for (int i = 0; i < 11; i++) freeList[i] = NULL;
+    allocatedList = NULL;
 
-    size_t new_size = block->size / 2;
-    Block *buddy = (Block *)((uint8_t *)block + new_size);
-
-    block->size = new_size;
-    buddy->size = new_size;
-    block->free = 1;
-    buddy->free = 1;
-
-    block->next = buddy;
-    buddy->next = free_list[level - 1];
-    free_list[level - 1] = block;
+    Block *initialBlock = (Block *)memory; // Typecasts char* to Block*
+    initialBlock->size = MEMORY_SIZE;
+    initialBlock->next = NULL;
+    initialBlock->allocated = false;
+    freeList[getLevel(MEMORY_SIZE)] = initialBlock;
 }
 
-void *allocate(size_t size) {
-    int level = get_level(size);
-    while (level <= MAX_LEVELS && !free_list[level]) {
-        level++;
-    }
-    if (level > MAX_LEVELS) return NULL;
+// Splitting blocks in equal halves iteratively till free-block of required size not created
+void splitBlock(int fromLevel, int toLevel) {
+    while (fromLevel > toLevel) {
+        Block *block = freeList[fromLevel];
+        if (block){
+            freeList[fromLevel] = block->next; // Remove the block
 
-    while (level > get_level(size)) {
-        split(level);
-        level--; 
-    }
+            // Creating new Block of half the size
+            size_t newSize = block->size / 2;
+            Block *buddy = (Block *)((char *)block + newSize); 
 
-    Block *block = free_list[level];
-    free_list[level] = block->next;
-    block->free = 0;
-    allocated_blocks[allocation_index++] = block;
-    return (void *)block;
-}
+            block->size = newSize;
+            buddy->size = newSize;
+            block->allocated = false;
+            buddy->allocated = false;
 
-Block *find_buddy(Block *block) {
-    size_t block_address = (size_t)block;
-    size_t buddy_address = block_address ^ block->size;
-    return (Block *)buddy_address;
-}
+            // Insert both new blocks into the smaller free list
+            block->next = buddy;
+            buddy->next = freeList[fromLevel - 1];
+            freeList[fromLevel - 1] = block;
 
-void merge(int level) {
-    Block *current = free_list[level];
-    Block *prev = NULL;
-
-    while (current) {
-        Block *buddy = find_buddy(current);
-        Block *search = free_list[level];
-        Block *search_prev = NULL;
-        while (search) {
-            if (search == buddy && search->free) break;
-            search_prev = search;
-            search = search->next;
-        }
-        if (search) {
-            if (prev) prev->next = current->next;
-            else free_list[level] = current->next;
-
-            if (search_prev) search_prev->next = search->next;
-            else free_list[level] = search->next;
-
-            if (current < buddy) {
-                current->size *= 2;
-                current->next = free_list[level + 1];
-                free_list[level + 1] = current;
-            } else {
-                buddy->size *= 2;
-                buddy->next = free_list[level + 1];
-                free_list[level + 1] = buddy;
-            }
-            current = free_list[level];
-            prev = NULL;
-        } else {
-            prev = current;
-            current = current->next;
+            fromLevel--;
         }
     }
 }
 
-void free_memory(void *ptr) {
-    if (!ptr) {
-        printf("Invalid pointer.\n");
-        return;
+// Allocate a heap block of required size (best-fit)
+void *allocateMemory(size_t size) {
+    void *ret_val = NULL;
+    size_t totalSize = size + sizeof(Block); // Adding metadata in required size
+    if (totalSize < MIN_BLOCK_SIZE) totalSize = MIN_BLOCK_SIZE;
+
+    int level = getLevel(totalSize);
+    int i = level;
+
+    // Finding first non-empty free-list for a level >= required level
+    while (i < 11 && !freeList[i]) i++;
+    if (i != 11) {
+        // Split the Block until required block size not created
+        splitBlock(i, level);
+
+        Block *block = freeList[level];
+        freeList[level] = block->next;
+        block -> allocated = true;
+        block -> next = allocatedList;
+        allocatedList = block;
+
+        printf("Allocated block of size %zu at address %p\n", block -> size, (void *)block);
+        ret_val = (void *)((char *)block + sizeof(Block));  //  Directly return user memory
     }
-    int found = 0;
-    for (int i = 0; i < allocation_index; i++) {
-        if (allocated_blocks[i] == ptr) {
-            found = 1;
-            allocated_blocks[i] = NULL;
-            break;
-        }
+    else {
+        printf("Memory Allocation failed. Enough Space not available for required allocation\n");
     }
-    if (!found) {
-        printf("Error: Pointer not found.\n");
-        return;
-    }
-    Block *block = (Block *)ptr;
-    block->free = 1;
-    int level = get_level(block->size);
-    block->next = free_list[level];
-    free_list[level] = block;
-    merge(level);
+    return ret_val;
 }
 
-void display_memory() {
-    printf("\n================ Free Memory Blocks ================\n");
-    for (int i = 0; i <= MAX_LEVELS; i++) {
-        printf("Level %d: ", i);
-        Block *current = free_list[i];
+
+// Get buddy of a block
+Block *getBuddy(Block *block) {
+    size_t offset = (char *)block - memory;
+    size_t buddyOffset = offset ^ block->size;
+    // XOR being used to calcualte off-set due to binary-tree representation of buddy-system
+    return (Block *)(memory + buddyOffset);
+}
+
+// Merge free blocks
+void mergeBlock(Block *block) {
+    int level = getLevel(block->size);
+    Block *buddy = getBuddy(block);
+
+    // Loop for multiple merging in case of consecutive levels blocks
+    while (level < 10 && !buddy->allocated && buddy->size == block->size) {
+        Block **prev = &freeList[level];
+
+        // Finding location of buddy in level
+        while (*prev && *prev != buddy){
+            prev = &(*prev)->next;
+        }
+        if (*prev) {
+            *prev = buddy->next; // Remove buddy from free list
+        }
+
+        if ((char *)block > (char *)buddy) {
+            block = buddy;
+        } 
+
+        block->size *= 2;   // Doubling size after merging
+        level++;    
+        buddy = getBuddy(block);
+    }
+    block -> allocated = false;
+    block -> next = freeList[level];    // Adding final-merged block to free-list (level)
+    freeList[level] = block;
+}
+
+// Remove allocated block from allocated-list
+void removeAllocatedBlock(Block *block) {
+    Block **prev = &allocatedList;
+    while (*prev && *prev != block) {
+        prev = &(*prev)->next;
+    }
+    if (*prev) {
+        *prev = block -> next;
+    }
+}
+
+// Function to free memory block
+void freeMemory(void *ptr) {
+    if (!ptr) return;
+
+    Block *block = (Block *)((char *)ptr - sizeof(Block));  // Recover block
+    block -> allocated = false;
+
+    removeAllocatedBlock(block);
+    mergeBlock(block);
+}
+
+
+// Print free list state
+void printFreeMemoryState() {
+    printf("\nFree List:\n");
+    for (int i = 0; i < 11; i++) {
+        printf("Size %d: ", 1 << i);
+        Block *current = freeList[i];
         while (current) {
-            printf("[Size: %zu] -> ", current->size);
+            printf("[%p] ", (void *)current);
             current = current->next;
         }
-        printf("NULL\n");
+        printf("\n");
     }
-    printf("===================================================\n");
 }
 
-void display_allocated_memory() {
-    printf("Allocated Memory Blocks:\n");
-    for (int i = 0; i < allocation_index; i++) {
-        if (allocated_blocks[i] != NULL) {
-            Block *block = (Block *)allocated_blocks[i];
-            printf("Index %d: Address = %p, Size = %zu\n", i, (void *)block, block->size);
-        }
+// Print allocated list
+void printAllocatedMemory() {
+    printf("\nAllocated Memory List:\n");
+    Block *current = allocatedList;
+    while (current) {
+        printf("Address: %p, Size: %zu\n", (void *)((char *)current + sizeof(Block)), current->size);
+        current = current -> next;
     }
 }
 
 int main() {
-    int choice;
+    initializeMemory(); 
+    int choice = 0;
     size_t size;
     void *ptr;
-    init_memory();
-    while (1) {
-        printf("\nBuddy System Memory Management\n");
+
+    while (choice != 5) {
+        printf("\n----- Virtual Heap Manager -----\n");
         printf("1. Allocate Memory\n");
-        printf("2. Free Memory\n");
-        printf("3. Display Free Memory\n");
-        printf("4. Display Allocated Memory\n");
+        printf("2. View Free Memory List\n");
+        printf("3. View Allocated Memory List\n");
+        printf("4. Free Memory\n");
         printf("5. Exit\n");
         printf("Enter your choice: ");
         scanf("%d", &choice);
+
         switch (choice) {
             case 1:
                 printf("Enter size to allocate: ");
                 scanf("%zu", &size);
-                ptr = allocate(size);
-                printf(ptr ? "Memory allocated at %p\n" : "Allocation failed.\n", ptr);
-                break;
-            case 2:
-                printf("Enter memory index to free: ");
-                int index;
-                scanf("%d", &index);
-                if (index < 0 || index >= allocation_index || !allocated_blocks[index])
-                    printf("Invalid allocation index.\n");
-                else {
-                    free_memory(allocated_blocks[index]);
-                    printf("Memory freed.\n");
+                ptr = allocateMemory(size);
+                if (ptr) {
+                    printf("Memory allocated at address: %p\n", ptr);
                 }
                 break;
+
+            case 2:
+                printFreeMemoryState();
+                break;
+
             case 3:
-                display_memory();
+                printAllocatedMemory();
                 break;
+
             case 4:
-                display_allocated_memory();
+                // Displays user only the memory blocks that are allocated so he can free it
+                if (!allocatedList) {
+                    printf("No allocated memory to free!\n");
+                }
+                else{
+                    printf("\nAllocated Blocks:\n");
+                    Block *current = allocatedList;
+                    int index = 1;
+                    while (current) {
+                        printf("%d. Address: %p, Size: %zu\n", index, 
+                            (void *)((char *)current + sizeof(Block)), current->size);
+                        current = current->next;
+                        index++;
+                    }
+
+                    int blockToFree;
+                    printf("Select the block to free (1-%d): ", index - 1);
+                    scanf("%d", &blockToFree);
+
+                    if (blockToFree < 1 || blockToFree >= index) {
+                        printf("Invalid selection.\n");
+                    }
+                    else{
+                        // Find the selected block
+                        current = allocatedList;
+                        for (int i = 1; i < blockToFree; i++) {
+                            current = current->next;
+                        }
+
+                        freeMemory((void *)((char *)current + sizeof(Block)));
+                        printf("Memory at address %p freed.\n", (void *)((char *)current + sizeof(Block)));
+                    }
+                }
                 break;
+
             case 5:
-                return 0;
+                printf("Exiting program...\n");
+
             default:
-                printf("Invalid choice. Try again.\n");
+                printf("Invalid choice. Please try again.\n");
         }
     }
+    return 0;
 }
