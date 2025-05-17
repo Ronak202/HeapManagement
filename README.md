@@ -16,10 +16,10 @@ This program implements a **Buddy System Memory Management** technique to effici
 - **Efficient Merging**: When memory is freed, adjacent buddies are merged.
 
 ## Functions
-- `void *allocate(size_t size)`: Allocates memory of given size.
-- `void free_memory(void *ptr)`: Frees an allocated block and merges if possible.
-- `void display_memory()`: Displays the current state of free memory blocks.
-- `void display_allocated_memory()`: Shows allocated memory blocks and their details.
+- `void *allocateMemory(size_t size)`: Allocates memory of given size.
+- `void freeMemory(void *ptr)`: Frees an allocated block and merges if possible.
+- `void printFreeMemoryState(): Displays the current state of free memory blocks.
+- `void printAllocatedMemory()`: Shows allocated memory blocks and their details.
 
 ## Usage
 1. Run the program.
